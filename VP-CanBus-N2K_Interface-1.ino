@@ -29,8 +29,6 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
-#include <NMEA2000_CAN.h>       
-#include <N2kMessages.h>
 #include <mcp_can.h>
 #include <SPI.h>
 
@@ -73,40 +71,9 @@ void setup() {
   CAN0.setMode(MCP_LISTENONLY);   // Set operation mode to listen only. We don't want to write anything to the VP CAN-Bus
   pinMode(CAN0_INT, INPUT);       // Configuring pin for INT input
 
- 
-// NMEA2000 initialisation section
-  NMEA2000.SetN2kCANMsgBufSize(8);
-  NMEA2000.SetN2kCANReceiveFrameBufSize(150);
-  NMEA2000.SetN2kCANSendFrameBufSize(150);
 
-// Generate unique number from chip id
-  esp_efuse_mac_get_default(chipid);
-  for (i = 0; i < 6; i++) id += (chipid[i] << (7 * i));
-
-// Set product information
-  NMEA2000.SetProductInformation("1", // Manufacturer's Model serial code
-                                 100, // Manufacturer's product code
-                                 "VolvoPenta-N2K Interface",  // Manufacturer's Model ID
-                                 "SW-Vers:  0.9 (2021-12-14)",  // Manufacturer's Software version code
-                                 "Mod-Vers: 0.9 (2021-12-14)" // Manufacturer's Model version
-                                );
-// Set device information
-  NMEA2000.SetDeviceInformation(id, // Unique number. Use e.g. Serial number.
-                                160, // Device function=Device that brings information from an engine used for propulsion onto the NMEA 2000 network
-                                50,  // Device class=Propulsion
-                                2002 // Just choosen free from code list on http://www.nmea.org/Assets/20121020%20nmea%202000%20registration%20list.pdf
-                               );
 
   preferences.begin("nvs", false);                          // Open nonvolatile storage (nvs)
-  NodeAddress = preferences.getInt("LastNodeAddress", 37);  // Read stored last NodeAddress, default 34
-  preferences.end();
-  Serial.printf("\nN2K-NodeAddress=%d\n", NodeAddress);
-
-// If you also want to see all traffic on the bus use N2km_ListenAndNode instead of N2km_NodeOnly below
-  NMEA2000.SetMode(tNMEA2000::N2km_NodeOnly, NodeAddress);
-  NMEA2000.ExtendTransmitMessages(TransmitMessages);
-
-  NMEA2000.Open();
   delay(200);
 }
 
@@ -117,14 +84,9 @@ void loop()
   long unsigned int PGN;
   unsigned char len = 0;
   unsigned char Data[16];
-  tN2kMsg N2kMsg;
   double EngineHours,CoolantTemperature, AlternatorVoltage, RPM;
   static int SendSTAT;
   
-  NMEA2000.ParseMessages();  // to be removed?
-
-  CheckSourceAddressChange();
-
   if ( Serial.available())      // Dummy to empty input buffer to avoid board to stuck with e.g. NMEA Reader
     Serial.read();
 
@@ -136,10 +98,7 @@ void loop()
 
     switch(PGN)
     {
-      case 61444: N2kMsg = PGN;
-                  RPM = (Data[4] * 256.0 + Data[3] ) / 8.0;                                           // get revolutions
-                  SetN2kPGN127488(N2kMsg, 0, (double) RPM, (double) N2kDoubleNA, (int8_t) N2kInt8NA); // prepare the datagramm
-                  NMEA2000.SendMsg(N2kMsg);                                                           // send it out
+      case 61444: RPM = (Data[4] * 256.0 + Data[3] ) / 8.0;                                           // get revolutions
                   Serial.printf("RPM: %.1f\n", RPM);
                   break;
       case 65253: EngineHours = (Data[0] + Data[1] * 256)/20;             // get engine hours
@@ -155,9 +114,6 @@ void loop()
 
     if ( SendSTAT == 0x07 )   // are the three values available
     {
-      N2kMsg = PGN;
-      SetN2kPGN127489 (N2kMsg, 0, N2kDoubleNA, N2kDoubleNA, CToKelvin(CoolantTemperature), AlternatorVoltage, N2kDoubleNA, EngineHours*3600.0, N2kDoubleNA, N2kDoubleNA, N2kInt8NA, N2kInt8NA, 0x00,0x00);
-      NMEA2000.SendMsg(N2kMsg);
       Serial.printf("Battery:%.2f Hours: %.2f Temperature: %.2f\n", AlternatorVoltage, EngineHours, CoolantTemperature);
       CoolantTemperature = AlternatorVoltage = EngineHours = 0.0;
       SendSTAT = 0;
@@ -165,42 +121,5 @@ void loop()
   }
 } 
 
-//*****************************************************************************
-// Function to check if SourceAddress has changed (due to address conflict on bus)
-void CheckSourceAddressChange() 
-{
-  int SourceAddress = NMEA2000.GetN2kSource();
 
-  if (SourceAddress != NodeAddress) { // Save potentially changed Source Address to NVS memory
-    NodeAddress = SourceAddress;      // Set new Node Address (to save only once)
-    preferences.begin("nvs", false);
-    preferences.putInt("LastNodeAddress", SourceAddress);
-    preferences.end();
-    Serial.printf("Address Change: New Address=%d\n", SourceAddress);
-  }
-}
 
-//*****************************************************************************
-void SayHello()
-{
-  char Sketch[80], buf[256], Version[80];
-  int i;
-
-  // Get source code filename
-  strcpy(buf, __FILE__);
-  i = strlen(buf);
-
-  // remove path and suffix
-  while (buf[i] != '.' && i >= 0)
-    i--;
-  buf[i] = '\0';
-  while ( buf[i] != '\\' && i >= 0)
-    i--;
-  i++;
-  strcpy(Sketch, buf + i);
-
-  // Sketch date/time of compliation
-  sprintf(buf, "\nSketch: \"%s\", compiled %s, %s\n", Sketch, __DATE__, __TIME__);
-  Serial.println(buf);
-  Serial.println(Description);
-}
