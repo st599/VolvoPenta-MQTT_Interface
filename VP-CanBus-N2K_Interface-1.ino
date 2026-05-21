@@ -50,9 +50,9 @@
 const char *ssid = "xxxxx"; // Enter your WiFi name
 const char *password = "xxxxx";  // Enter WiFi password
 const char *mqtt_broker = "192.168.0.1";  // MQTT broker address (e.g., IP address or hostname of the SignalK server)
-const int mqtt_port = 1883;
-WiFiClient espClient;
-PubSubClient client(espClient);
+const int mqtt_port = 1883; // MQTT broker port (default is 1883 for non-secure connections)
+WiFiClient espClient; // Create a WiFi client for MQTT communication
+PubSubClient client(espClient); // Create an MQTT client using the WiFi client
 
 
 #define CAN0_INT 17                            
@@ -61,11 +61,14 @@ MCP_CAN CAN0(5);
 const char Description[] = "Description: Volvo Penta->N2K interface. Read J1939 data from VP canbus, \nconvert it and send it to a SignalK server.\n\n";
 const char mqttPrefix[] = "W/signalk/";  // MQTT topic prefix for SignalK data
 const char mmsi[] = "123456789";  // MMSI number for the vessel, used in MQTT topics
-const char runTimeTopic[] = "/vessels/self/propulsion/main/runTime";
-const char coolantTempTopic[] = "/vessels/self/propulsion/main/coolantTemperature";
-const char alternatorVoltageTopic[] = "/vessels/self/propulsion/main/alternatorVoltage";
-const char rpmTopic[] = "/vessels/self/propulsion/main/revolutions";
+const char runTimeTopic[] = "/vessels/self/propulsion/main/runTime"; // MQTT topic for engine hours
+const char coolantTempTopic[] = "/vessels/self/propulsion/main/coolantTemperature"; // MQTT topic for coolant temperature
+const char alternatorVoltageTopic[] = "/vessels/self/propulsion/main/alternatorVoltage"; // MQTT topic for alternator voltage
+const char rpmTopic[] = "/vessels/self/propulsion/main/revolutions"; // MQTT topic for Revolutions (Hz)
 
+#define celsiusToKelvin 273.15  // Constant to convert Celsius to Kelvin, if needed in future calculations
+#define hoursToSeconds 3600  // Constant to convert hours to seconds, if needed in future calculations
+#define rpmToHz 1.0/60.0  // Constant to convert RPM to Hz, if needed in future calculations
 
 //
 //   FUNCTION DEFINITIONS
@@ -125,7 +128,7 @@ void loop()
   long unsigned int PGN;
   unsigned char len = 0;
   unsigned char Data[16];
-  double EngineHours,CoolantTemperature, AlternatorVoltage, RPM, Revolutions_Hz;
+  double EngineHours, CoolantTemperature, AlternatorVoltage, RPM, Revolutions_Hz, EngineSeconds;
   static int SendSTAT;
   
   if ( Serial.available())      // Dummy to empty input buffer to avoid board to stuck with e.g. NMEA Reader
@@ -140,14 +143,15 @@ void loop()
     switch(PGN)
     {
       case 61444: RPM = (Data[4] * 256.0 + Data[3] ) / 8.0;               // get revolutions
-                  Revolutions_Hz = RPM / 60.0;                            // convert RPM to Hz
+                  Revolutions_Hz = RPM * rpmToHz;                         // convert RPM to Hz
                   Serial.printf("Revolutions (Hz): %.2f\n", Revolutions_Hz);
                   break;
       case 65253: EngineHours = (Data[0] + Data[1] * 256)/20;             // get engine hours
+                  EngineSeconds = EngineHours * hoursToSeconds;           // convert engine hours to seconds
                   SendSTAT |= 1;                                          // set status 'engine hours value is available'
                   Serial.printf("Engine Hours: %.2f\n", EngineHours);
                   break;
-      case 65262: CoolantTemperature = Data[0] - 40;                      // get coolant temperature
+      case 65262: CoolantTemperature = Data[0] - 40 + celsiusToKelvin;    // get coolant temperature
                   SendSTAT |= 2;                                          // set status 'coolant temperature value is available'
                   Serial.printf("Coolant Temperature: %.2f\n", CoolantTemperature);
                   break;
@@ -159,12 +163,12 @@ void loop()
 
     if ( SendSTAT == 0x07 )   // are the three values available
     {
-      Serial.printf("Battery:%.2f Hours: %.2f Temperature: %.2f Revolutions (Hz): %.2f\n", AlternatorVoltage, EngineHours, CoolantTemperature, Revolutions_Hz);
+      Serial.printf("Battery: %.2f V  Hours: %.2f  Temperature: %.2f K  Revolutions: %.2f (Hz)\n", AlternatorVoltage, EngineHours, CoolantTemperature, Revolutions_Hz);
       char str[256];
       strcpy(str, mqttPrefix);
       strcat(str, mmsi);  
       strcat(str, runTimeTopic);
-      client.publish(str, String(EngineHours).c_str(), true);  // Publish engine hours to MQTT topic
+      client.publish(str, String(EngineSeconds).c_str(), true);  // Publish engine seconds to MQTT topic
       strcpy(str, mqttPrefix);
       strcat(str, mmsi);
       strcat(str, coolantTemperatureTopic);
