@@ -178,7 +178,7 @@ void loop()
       strcat(str, revolutionsTopic);
       client.publish(str, String(Revolutions_Hz).c_str(), true);  // Publish revolutions to MQTT topic
       strcpy(str, ""); 
-      CoolantTemperature = AlternatorVoltage = EngineHours = Revolutions_Hz = 0.0; 
+      CoolantTemperature = AlternatorVoltage = EngineHours = Revolutions_Hz = EngineSeconds = 0.0; 
       SendSTAT = 0;
     }
   }
