@@ -12,47 +12,55 @@
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
-// This Sketch is based on code by  Timo Lappalainen https://github.com/ttlappalainen
-//                                  Andreas Koritnik https://github.com/AK-Homberger
-//                                  Cory J. Fowler   https://github.com/coryjfowler
-//                                    
-//                                  
-//                                      
-// 20211214 first version to read Volvo Penta MDI J1939 messages (RPM, engine hours, coolant temperature, alternator voltage)
-// from VP CANBus, convert it and write it to a N2K bus.
 //
+//   Volvo Penta CANbus to SignalK via MQTT Gateway
+//
+//   Filename        :   vp_canbus_to_n2k.py
+//   Description     :   Sends boat engine data to MQTT Gateway
+//   Date            :   22/05/2026
+//   Author          :   Simon Thompson
+//   Copyright       :   Simon Thompson 2026
+//                   :   Buhhe 2021
+//   Dependencies    :   Arduino IDE, ESP32 board support, MCP_CAN library, SPI library
+//   License         :   GNU Lesser General Public License v2.1 or later
+//   Repository      :   https://github.com/st599/VolvoPenta-MQTT_Interface 
+//   Based on        :   This code is based on the work of Buhhe and has been modified to 
+//                       read specific J1939 data from the Volvo Penta CANbus and send it to a SignalK server. 
+//                       The original code can be found at https://github.com/buhhe/VolvoPenta-N2K_Interface.
 
-
-
-#define ESP32_CAN_TX_PIN GPIO_NUM_26  // Set CAN TX port to 26  
-#define ESP32_CAN_RX_PIN GPIO_NUM_27  // Set CAN RX port to 27
-
+//
+//   SYSTEM IMPORTS
+//
 #include <Arduino.h>
 #include <Preferences.h>
 #include <mcp_can.h>
 #include <SPI.h>
 
 
-// to be printed with some additional information to USB-serial
-const char Description[] = "Description: Volvo Penta->N2K interface. Read J1939 data from VP canbus, \nconvert it and send it to a N2K bus.\n\n";
+//
+//  AUTHOR IMPORTS
+//
 
-int NodeAddress;            // To store last Node Address
-Preferences preferences;    // Nonvolatile storage on ESP32 - To store LastDeviceAddress
-
-
-const unsigned long TransmitMessages[] PROGMEM = {127488L, 127489L,0}; // Set the information for other bus devices, which messages we support
-
+//
+//  GLOBAL CONSTANTS
+//
 #define CAN0_INT 17                            
-MCP_CAN CAN0(5);                               
+MCP_CAN CAN0(5); 
 
-// forward declarations
-void          SayHello(void);
-void          CheckSourceAddressChange(void);
+const char Description[] = "Description: Volvo Penta->N2K interface. Read J1939 data from VP canbus, \nconvert it and send it to a SignalK server.\n\n";
+const char mqttPrefix[] = "W/signalk/";  // MQTT topic prefix for SignalK data
+const char runTimeTopic[] = "/vessels/self/propulsion/main/runTime";
+const char coolantTempTopic[] = "/vessels/self/propulsion/main/coolantTemperature";
+const char alternatorVoltageTopic[] = "/vessels/self/propulsion/main/alternatorVoltage";
+const char rpmTopic[] = "/vessels/self/propulsion/main/revolutions";
 
 
-//*****************************************************************************
+
+
+//
+//   FUNCTION DEFINITIONS
+//
 void setup() {
-  uint8_t chipid[6];
   uint32_t id = 0, i;
 
   Serial.begin(115200);
@@ -78,44 +86,50 @@ void setup() {
 }
 
 
-//*****************************************************************************
+//
+//   MAIN LOOP: read CAN messages and process them
+//
 void loop() 
 {
   long unsigned int PGN;
   unsigned char len = 0;
   unsigned char Data[16];
-  double EngineHours,CoolantTemperature, AlternatorVoltage, RPM;
+  double EngineHours,CoolantTemperature, AlternatorVoltage, RPM, Revolutions_Hz;
   static int SendSTAT;
   
   if ( Serial.available())      // Dummy to empty input buffer to avoid board to stuck with e.g. NMEA Reader
     Serial.read();
-
+  
   if(!digitalRead(CAN0_INT))                  // If CAN0_INT pin is low, read receive buffer
   {
-    CAN0.readMsgBuf(&PGN, &len, Data);      // Read data: len = data length, buf = data byte(s)
+    CAN0.readMsgBuf(&PGN, &len, Data);        // Read data: len = data length, buf = data byte(s)
 
-    PGN = (PGN>>8)&0xFFFF;                // get the PGN
+    PGN = (PGN>>8)&0xFFFF;                    // get the PGN
 
     switch(PGN)
     {
-      case 61444: RPM = (Data[4] * 256.0 + Data[3] ) / 8.0;                                           // get revolutions
-                  Serial.printf("RPM: %.1f\n", RPM);
+      case 61444: RPM = (Data[4] * 256.0 + Data[3] ) / 8.0;               // get revolutions
+                  Revolutions_Hz = RPM / 60.0;                            // convert RPM to Hz
+                  Serial.printf("Revolutions (Hz): %.2f\n", Revolutions_Hz);
                   break;
       case 65253: EngineHours = (Data[0] + Data[1] * 256)/20;             // get engine hours
                   SendSTAT |= 1;                                          // set status 'engine hours value is available'
+                  Serial.printf("Engine Hours: %.2f\n", EngineHours);
                   break;
       case 65262: CoolantTemperature = Data[0] - 40;                      // get coolant temperature
                   SendSTAT |= 2;                                          // set status 'coolant temperature value is available'
+                  Serial.printf("Coolant Temperature: %.2f\n", CoolantTemperature);
                   break;
       case 65271: AlternatorVoltage = (Data[7] * 256.0 + Data[6]) / 20.0; // get alternator voltage
                   SendSTAT |= 4;                                          // set status 'alternator voltage value is available'
+                  Serial.printf("Alternator Voltage: %.2f\n", AlternatorVoltage);
                   break;
     }
 
     if ( SendSTAT == 0x07 )   // are the three values available
     {
-      Serial.printf("Battery:%.2f Hours: %.2f Temperature: %.2f\n", AlternatorVoltage, EngineHours, CoolantTemperature);
-      CoolantTemperature = AlternatorVoltage = EngineHours = 0.0;
+      Serial.printf("Battery:%.2f Hours: %.2f Temperature: %.2f Revolutions (Hz): %.2f\n", AlternatorVoltage, EngineHours, CoolantTemperature, Revolutions_Hz);
+      CoolantTemperature = AlternatorVoltage = EngineHours = Revolutions_Hz = 0.0; 
       SendSTAT = 0;
     }
   }
