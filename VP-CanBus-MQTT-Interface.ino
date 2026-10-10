@@ -1,7 +1,7 @@
 //
 //   Volvo Penta CANbus to SignalK via MQTT Gateway
 //
-//   Filename        :   vp_canbus_to_n2k.py
+//   Filename        :   VP-CanBus-MQTT-Interface.ino
 //   Description     :   Sends boat engine data to MQTT Gateway
 //   Date            :   22/05/2026
 //   Author          :   Simon Thompson
